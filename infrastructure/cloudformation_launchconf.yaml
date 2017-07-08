@@ -1,0 +1,140 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Resources:
+  CISecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: CISecurityGroup
+      GroupDescription: Security Group for CI servers.
+      VpcId: !ImportValue CIVPC-VpcId
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          FromPort: '0'
+          ToPort: '65535'
+      SecurityGroupIngress:
+        - CidrIp: !Ref OriginIp
+          IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+        - CidrIp: 10.0.0.0/16
+          IpProtocol: icmp
+          FromPort: '-1'
+          ToPort: '-1'
+        - CidrIp: 10.0.0.0/16
+          IpProtocol: tcp
+          FromPort: '0'
+          ToPort: '65535'
+
+  MasterChef:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-7abd0209
+      KeyName: !Ref KeyName
+      InstanceType: t2.medium
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroupIds: [!Ref CISecurityGroup]
+      SubnetId: !ImportValue CIVPC-SubnetA
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo yum -y update
+          sudo yum install -y wget nano
+          wget https://packages.chef.io/stable/el/7/chef-server-core-12.10.0-1.el7.x86_64.rpm
+          rpm -ivh chef-server-core-12.10.0-1.el7.x86_64.rpm
+          sudo rpm -ivh chef-server-core-12.10.0-1.el7.x86_64.rpm
+          chef-server-ctl reconfigure      
+      Tags:
+        - Key: Name
+          Value: Master-Chef-Server
+
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      AssociatePublicIpAddress: true
+      ImageId: ami-7abd0209
+      SecurityGroups: [!Ref CISecurityGroup]
+      InstanceType: t2.medium
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum -y update
+          sudo yum install -y wget nano
+          wget https://packages.chef.io/stable/el/7/chef-server-core-12.10.0-1.el7.x86_64.rpm
+          rpm -ivh chef-server-core-12.10.0-1.el7.x86_64.rpm
+          sudo rpm -ivh chef-server-core-12.10.0-1.el7.x86_64.rpm
+          chef-server-ctl reconfigure
+
+  AutoScalingGroup:
+    DependsOn: LaunchConfiguration
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: [!ImportValue CIVPC-SubnetA, !ImportValue CIVPC-SubnetC]
+      AvailabilityZones: [eu-west-1a, eu-west-1c]
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      MinSize: 0
+      MaxSize: 1
+      DesiredCapacity: 0
+      Cooldown: 30
+      HealthCheckGracePeriod: 30
+      Tags:
+        - Key: Name
+          Value: CI-Server
+          PropagateAtLaunch: true
+
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CIRole
+      AssumeRolePolicyDocument:
+        Version: "2008-10-17"
+        Statement:
+          -
+            Sid: ""
+            Effect: "Allow"
+            Principal:
+              Service: "ec2.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        -
+          PolicyName: "CIPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "s3:*"
+                Resource: "*"
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: CIInstanceProfile
+      Roles:
+        - !Ref Role
+      Path: "/"        
+
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the EC2 instances.
+  OriginIp:
+    Type: String
+    Description: IP from which inbound traffic is allowed. 
+
+Outputs:
+  securityGoup:
+    Value: !Ref CISecurityGroup
+  roleArn:
+    Value: !GetAtt [Role, Arn]
+    Description: Arn value of the CI Role.
+  instanceProfileArn:
+    Value: !GetAtt [InstanceProfile, Arn]
+    Description: Arn value of the Instance Profile for CI servers. 
+  launchConfiguration:
+    Value: !Ref LaunchConfiguration
+  autoScalinGroup:
+    Value: !Ref AutoScalingGroup
